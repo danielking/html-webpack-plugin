@@ -144,14 +144,15 @@ HtmlWebpackPlugin.prototype.apply = function (compiler) {
       .then(function (result) {
         var html = result.html;
         var assets = result.assets;
+        var chunks = result.chunks;
         // Prepare script and link tags
         var assetTags = self.generateAssetTags(assets);
-        var pluginArgs = {head: assetTags.head, body: assetTags.body, plugin: self, chunks: chunks, outputName: self.childCompilationOutputName};
+        var pluginArgs = {head: assetTags.head, body: assetTags.body, placeholder: assetTags.placeholder, plugin: self, chunks: chunks, outputName: self.childCompilationOutputName};
         // Allow plugins to change the assetTag definitions
         return applyPluginsAsyncWaterfall('html-webpack-plugin-alter-asset-tags', true, pluginArgs)
           .then(function (result) {
               // Add the stylesheets, scripts and so on to the resulting html
-            return self.postProcessHtml(html, assets, { body: result.body, head: result.head })
+            return self.postProcessHtml(html, assets, { body: result.body, head: result.head, placeholder: result.placeholder })
               .then(function (html) {
                 return _.extend(result, {html: html, assets: assets});
               });
@@ -479,20 +480,26 @@ HtmlWebpackPlugin.prototype.generateAssetTags = function (assets) {
   });
   // Make tags self-closing in case of xhtml
   var selfClosingTag = !!this.options.xhtml;
+	var cssImport = !!this.options.cssImport;
   // Turn css files into link tags
   var styles = assets.css.map(function (stylePath) {
     return {
       tagName: 'link',
       selfClosingTag: selfClosingTag,
-      attributes: {
+      attributes: cssImport ? {
         href: stylePath,
-        rel: 'stylesheet'
+        rel: 'import',
+				type: 'css',
+			} : {
+        href: stylePath,
+        rel: 'stylesheet',
       }
     };
   });
   // Injection targets
   var head = [];
   var body = [];
+	var placeholder = [];
 
   // If there is a favicon present, add it to the head
   if (assets.favicon) {
@@ -505,15 +512,18 @@ HtmlWebpackPlugin.prototype.generateAssetTags = function (assets) {
       }
     });
   }
-  // Add styles to the head
-  head = head.concat(styles);
-  // Add scripts to body or head
+  // Add styles or scripts to the head/body/placeholder
   if (this.options.inject === 'head') {
+	  head = head.concat(styles);
     head = head.concat(scripts);
+  } else if (this.options.inject === 'placeholder') {
+	  placeholder = placeholder.concat(styles);
+    placeholder = placeholder.concat(scripts);
   } else {
+	  head = head.concat(styles);
     body = body.concat(scripts);
   }
-  return {head: head, body: body};
+  return {head: head, body: body, placeholder: placeholder};
 };
 
 /**
@@ -523,8 +533,16 @@ HtmlWebpackPlugin.prototype.injectAssetsIntoHtml = function (html, assets, asset
   var htmlRegExp = /(<html[^>]*>)/i;
   var headRegExp = /(<\/head>)/i;
   var bodyRegExp = /(<\/body>)/i;
+  var jsPlaceholderRegExp = /(<!-- js -->)/i;
+  var cssPlaceholderRegExp = /(<!-- css -->)/i;
   var body = assetTags.body.map(this.createHtmlTag);
   var head = assetTags.head.map(this.createHtmlTag);
+  var jsTags = assetTags.placeholder
+		.filter(function(t) { return t.tagName === 'script'; })
+		.map(this.createHtmlTag);
+  var cssTags = assetTags.placeholder
+		.filter(function(t) { return t.tagName === 'link'; })
+		.map(this.createHtmlTag);
 
   if (body.length) {
     if (bodyRegExp.test(html)) {
@@ -556,6 +574,12 @@ HtmlWebpackPlugin.prototype.injectAssetsIntoHtml = function (html, assets, asset
     });
   }
 
+	if (cssTags.length) {
+		html = html.replace(cssPlaceholderRegExp, cssTags.join(''));
+	}
+	if (jsTags.length) {
+		html = html.replace(jsPlaceholderRegExp, jsTags.join(''));
+	}
   // Inject manifest into the opening html tag
   if (assets.manifest) {
     html = html.replace(/(<html[^>]*)(>)/i, function (match, start, end) {
